@@ -266,6 +266,60 @@
   .nearby-item.out-range .indicator { background: var(--text-dim); }
   .nearby-item.in-range .dist { color: var(--alert); font-weight: 700; }
 
+  /* Nearby item detail popup */
+  .nearby-item { position: relative; cursor: pointer; }
+  .nearby-item .expand-icon {
+    font-size: 11px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+    transition: transform 0.2s;
+  }
+  .nearby-item.expanded .expand-icon { transform: rotate(180deg); }
+  .nearby-detail {
+    display: none;
+    padding: 10px 12px 6px 32px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-dim);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    animation: detailSlide 0.2s ease-out;
+  }
+  .nearby-detail.show { display: block; }
+  @keyframes detailSlide {
+    from { opacity: 0; transform: translateY(-6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .nearby-detail .detail-row {
+    display: flex;
+    gap: 8px;
+    padding: 3px 0;
+  }
+  .nearby-detail .detail-label {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    min-width: 70px;
+    flex-shrink: 0;
+  }
+  .nearby-detail .detail-value {
+    color: var(--text);
+    word-break: break-word;
+  }
+  .nearby-detail a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(34,211,238,0.3);
+    transition: border-color 0.2s;
+  }
+  .nearby-detail a:hover { border-color: var(--accent); }
+  .nearby-detail .no-data {
+    font-style: italic;
+    color: var(--text-dim);
+    opacity: 0.6;
+  }
+
   /* Points count badge */
   .badge {
     display: inline-flex; align-items: center; gap: 6px;
@@ -970,12 +1024,66 @@
       if (coordEl) {
         const parts = coordEl.textContent.trim().split(',');
         if (parts.length >= 2) {
-          points.push({
+          const point = {
             name: name,
             lng: parseFloat(parts[0]),
             lat: parseFloat(parts[1]),
-            alerted: false
+            alerted: false,
+            meta: {} // all extra data
+          };
+
+          // Description (can contain HTML)
+          const descEl = pm.querySelector('description');
+          if (descEl && descEl.textContent.trim()) {
+            point.meta['Beschreibung'] = descEl.textContent.trim();
+          }
+
+          // Address
+          const addrEl = pm.querySelector('address');
+          if (addrEl && addrEl.textContent.trim()) {
+            point.meta['Adresse'] = addrEl.textContent.trim();
+          }
+
+          // Phone
+          const phoneEl = pm.querySelector('phoneNumber');
+          if (phoneEl && phoneEl.textContent.trim()) {
+            point.meta['Telefon'] = phoneEl.textContent.trim();
+          }
+
+          // Snippet
+          const snippetEl = pm.querySelector('Snippet');
+          if (snippetEl && snippetEl.textContent.trim()) {
+            point.meta['Kurzinfo'] = snippetEl.textContent.trim();
+          }
+
+          // ExtendedData > Data elements
+          const dataEls = pm.querySelectorAll('ExtendedData Data');
+          dataEls.forEach(d => {
+            const key = d.getAttribute('name') || 'Info';
+            const valEl = d.querySelector('value');
+            if (valEl && valEl.textContent.trim()) {
+              point.meta[key] = valEl.textContent.trim();
+            }
           });
+
+          // ExtendedData > SimpleData (from Schema-based KML)
+          const simpleDataEls = pm.querySelectorAll('ExtendedData SchemaData SimpleData');
+          simpleDataEls.forEach(sd => {
+            const key = sd.getAttribute('name') || 'Info';
+            if (sd.textContent.trim()) {
+              point.meta[key] = sd.textContent.trim();
+            }
+          });
+
+          // Altitude if present
+          if (parts.length >= 3 && parseFloat(parts[2]) !== 0) {
+            point.meta['Höhe'] = Math.round(parseFloat(parts[2])) + ' m';
+          }
+
+          // Coordinates for reference
+          point.meta['Koordinaten'] = parseFloat(parts[1]).toFixed(6) + ', ' + parseFloat(parts[0]).toFixed(6);
+
+          points.push(point);
         }
       }
     });
@@ -1215,14 +1323,81 @@
   }
 
   function renderNearby(items) {
-    nearbyList.innerHTML = items.map(p => {
+    nearbyList.innerHTML = items.map((p, i) => {
       const inRange = p.distance <= radius;
-      return `<div class="nearby-item ${inRange ? 'in-range' : 'out-range'}">
-        <div class="indicator"></div>
-        <div class="name">${escapeHtml(p.name)}</div>
-        <div class="dist">${formatDist(p.distance)}</div>
-      </div>`;
+      const metaKeys = p.meta ? Object.keys(p.meta) : [];
+      const hasData = metaKeys.length > 0;
+
+      let detailHtml = '';
+      if (hasData) {
+        detailHtml = '<div class="nearby-detail" id="detail-' + i + '">';
+        metaKeys.forEach(key => {
+          const raw = p.meta[key];
+          const rendered = renderValue(raw);
+          detailHtml += '<div class="detail-row">' +
+            '<span class="detail-label">' + escapeHtml(key) + '</span>' +
+            '<span class="detail-value">' + rendered + '</span>' +
+            '</div>';
+        });
+        detailHtml += '</div>';
+      }
+
+      return '<div class="nearby-item ' + (inRange ? 'in-range' : 'out-range') + '" data-detail="detail-' + i + '">' +
+        '<div class="indicator"></div>' +
+        '<div class="name">' + escapeHtml(p.name) + '</div>' +
+        '<div class="dist">' + formatDist(p.distance) + '</div>' +
+        (hasData ? '<div class="expand-icon">▼</div>' : '') +
+        '</div>' + detailHtml;
     }).join('');
+
+    // Click to expand/collapse
+    nearbyList.querySelectorAll('.nearby-item[data-detail]').forEach(item => {
+      item.addEventListener('click', (e) => {
+        // Don't toggle if clicking a link inside the detail
+        if (e.target.tagName === 'A') return;
+
+        const detailId = item.getAttribute('data-detail');
+        const detail = document.getElementById(detailId);
+        if (!detail) return;
+
+        const wasOpen = detail.classList.contains('show');
+
+        // Close all others
+        nearbyList.querySelectorAll('.nearby-detail.show').forEach(d => d.classList.remove('show'));
+        nearbyList.querySelectorAll('.nearby-item.expanded').forEach(it => it.classList.remove('expanded'));
+
+        // Toggle this one
+        if (!wasOpen) {
+          detail.classList.add('show');
+          item.classList.add('expanded');
+        }
+      });
+    });
+  }
+
+  // Detect URLs and render them as clickable links, handle HTML in descriptions
+  function renderValue(text) {
+    if (!text) return '<span class="no-data">—</span>';
+
+    // Check if it contains HTML tags (from KML description CDATA)
+    if (/<[a-z][\s\S]*>/i.test(text)) {
+      // Sanitize: only allow safe tags and make links open in new tab
+      const temp = document.createElement('div');
+      temp.innerHTML = text;
+      // Make all links open in new tab
+      temp.querySelectorAll('a').forEach(a => {
+        a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener noreferrer');
+      });
+      // Remove script tags
+      temp.querySelectorAll('script,style,iframe,object,embed').forEach(el => el.remove());
+      return temp.innerHTML;
+    }
+
+    // Plain text: detect and linkify URLs
+    const escaped = escapeHtml(text);
+    const urlRegex = /(https?:\/\/[^\s<>"']+)/g;
+    return escaped.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
   }
 
   function setStatus(type, text) {
