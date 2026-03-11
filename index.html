@@ -737,6 +737,7 @@
   let alarmActive = false;
   let alarmVibrationTimer = null;
   let pendingAlarmPoints = []; // points waiting to be dismissed
+  let expandedPointIndex = null; // which point index is currently expanded
 
   // DOM
   const fileDrop = document.getElementById('fileDrop');
@@ -1323,14 +1324,15 @@
   }
 
   function renderNearby(items) {
-    nearbyList.innerHTML = items.map((p, i) => {
+    nearbyList.innerHTML = items.map(p => {
       const inRange = p.distance <= radius;
       const metaKeys = p.meta ? Object.keys(p.meta) : [];
       const hasData = metaKeys.length > 0;
+      const isExpanded = expandedPointIndex === p.index;
 
       let detailHtml = '';
       if (hasData) {
-        detailHtml = '<div class="nearby-detail" id="detail-' + i + '">';
+        detailHtml = '<div class="nearby-detail' + (isExpanded ? ' show' : '') + '" data-detail-for="' + p.index + '">';
         metaKeys.forEach(key => {
           const raw = p.meta[key];
           const rendered = renderValue(raw);
@@ -1342,7 +1344,7 @@
         detailHtml += '</div>';
       }
 
-      return '<div class="nearby-item ' + (inRange ? 'in-range' : 'out-range') + '" data-detail="detail-' + i + '">' +
+      return '<div class="nearby-item ' + (inRange ? 'in-range' : 'out-range') + (isExpanded ? ' expanded' : '') + '" data-point-index="' + p.index + '">' +
         '<div class="indicator"></div>' +
         '<div class="name">' + escapeHtml(p.name) + '</div>' +
         '<div class="dist">' + formatDist(p.distance) + '</div>' +
@@ -1351,29 +1353,41 @@
     }).join('');
 
     // Click to expand/collapse
-    nearbyList.querySelectorAll('.nearby-item[data-detail]').forEach(item => {
+    nearbyList.querySelectorAll('.nearby-item[data-point-index]').forEach(item => {
       item.addEventListener('click', (e) => {
         // Don't toggle if clicking a link inside the detail
         if (e.target.tagName === 'A') return;
 
-        const detailId = item.getAttribute('data-detail');
-        const detail = document.getElementById(detailId);
+        const pointIdx = parseInt(item.getAttribute('data-point-index'));
+        const detail = nearbyList.querySelector('[data-detail-for="' + pointIdx + '"]');
         if (!detail) return;
 
-        const wasOpen = detail.classList.contains('show');
+        const wasOpen = expandedPointIndex === pointIdx;
 
-        // Close all others
+        // Close all
         nearbyList.querySelectorAll('.nearby-detail.show').forEach(d => d.classList.remove('show'));
         nearbyList.querySelectorAll('.nearby-item.expanded').forEach(it => it.classList.remove('expanded'));
 
-        // Toggle this one
+        // Toggle
         if (!wasOpen) {
           detail.classList.add('show');
           item.classList.add('expanded');
+          expandedPointIndex = pointIdx;
+        } else {
+          expandedPointIndex = null;
         }
       });
     });
   }
+
+  // Close expanded detail when clicking outside (registered once)
+  document.addEventListener('click', (e) => {
+    if (expandedPointIndex !== null && !nearbyList.contains(e.target)) {
+      nearbyList.querySelectorAll('.nearby-detail.show').forEach(d => d.classList.remove('show'));
+      nearbyList.querySelectorAll('.nearby-item.expanded').forEach(it => it.classList.remove('expanded'));
+      expandedPointIndex = null;
+    }
+  });
 
   // Detect URLs and render them as clickable links, handle HTML in descriptions
   function renderValue(text) {
