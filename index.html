@@ -266,14 +266,11 @@
   .nearby-item.out-range .indicator { background: var(--text-dim); }
   .nearby-item.in-range .dist { color: var(--alert); font-weight: 700; }
 
-  /* Category badge on nearby items */
-  .cat-icon {
-    width: 26px; height: 26px;
-    border-radius: 6px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 14px;
+  /* Category dot on nearby items */
+  .cat-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
     flex-shrink: 0;
-    line-height: 1;
   }
 
   /* Filter chips */
@@ -301,12 +298,11 @@
     -webkit-user-select: none;
   }
   .filter-chip:hover { border-color: rgba(255,255,255,0.2); }
-  .filter-chip.active {
-    border-color: rgba(255,255,255,0.3);
-    background: rgba(255,255,255,0.08);
-    color: var(--text);
+  .filter-chip .chip-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
   }
-  .filter-chip .chip-icon { font-size: 14px; }
   .filter-chip .chip-count {
     font-family: 'Space Mono', monospace;
     font-size: 10px;
@@ -799,28 +795,27 @@
   let pendingAlarmPoints = []; // points waiting to be dismissed
   let expandedPointIndex = null; // which point index is currently expanded
   let renderPausedUntil = 0; // timestamp until which list re-rendering is paused
-  let categories = {}; // detected categories: { key: { label, icon, color, count } }
+  let categories = {}; // detected categories: { key: { label, color, bg, count } }
   let activeFilters = new Set(); // which categories are active (empty = all)
   let hasCategories = false;
+  let colorAssignment = {}; // maps category key to color index
 
-  // Category definitions: maps amenity/emergency/healthcare values to display config
-  const CATEGORY_MAP = {
-    defibrillator:  { label: 'Defibrillator',  icon: '❤️‍🩹', color: '#ef4444', bg: 'rgba(239,68,68,0.15)' },
-    pharmacy:       { label: 'Apotheke',        icon: '💊',   color: '#10b981', bg: 'rgba(16,185,129,0.15)' },
-    doctors:        { label: 'Arzt',            icon: '🩺',   color: '#3b82f6', bg: 'rgba(59,130,246,0.15)' },
-    doctor:         { label: 'Arzt',            icon: '🩺',   color: '#3b82f6', bg: 'rgba(59,130,246,0.15)' },
-    dentist:        { label: 'Zahnarzt',        icon: '🦷',   color: '#8b5cf6', bg: 'rgba(139,92,246,0.15)' },
-    hospital:       { label: 'Spital',          icon: '🏥',   color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
-    clinic:         { label: 'Klinik',          icon: '🏨',   color: '#06b6d4', bg: 'rgba(6,182,212,0.15)' },
-    ambulance_station: { label: 'Ambulanz',     icon: '🚑',   color: '#f43f5e', bg: 'rgba(244,63,94,0.15)' },
-    telephone:      { label: 'Notfall-Telefon', icon: '📞',   color: '#eab308', bg: 'rgba(234,179,8,0.15)' },
-    centre:         { label: 'Gesundheitszentrum', icon: '🏥', color: '#14b8a6', bg: 'rgba(20,184,166,0.15)' },
-    rehabilitation: { label: 'Reha',            icon: '♿',   color: '#64748b', bg: 'rgba(100,116,139,0.15)' },
-    alternative:    { label: 'Alternativmedizin', icon: '🌿', color: '#22c55e', bg: 'rgba(34,197,94,0.15)' },
-    physiotherapist: { label: 'Physiotherapie', icon: '💆',   color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)' },
-    vaccination_centre: { label: 'Impfzentrum', icon: '💉',  color: '#a855f7', bg: 'rgba(168,85,247,0.15)' },
-  };
-  const DEFAULT_CATEGORY = { label: 'Sonstiges', icon: '📍', color: '#64748b', bg: 'rgba(100,116,139,0.15)' };
+  // Dynamic color palette — 12 distinct, high-contrast colors
+  const COLOR_PALETTE = [
+    { color: '#ef4444', bg: 'rgba(239,68,68,0.18)' },   // rot
+    { color: '#10b981', bg: 'rgba(16,185,129,0.18)' },   // grün
+    { color: '#3b82f6', bg: 'rgba(59,130,246,0.18)' },   // blau
+    { color: '#f59e0b', bg: 'rgba(245,158,11,0.18)' },   // orange
+    { color: '#8b5cf6', bg: 'rgba(139,92,246,0.18)' },   // violett
+    { color: '#06b6d4', bg: 'rgba(6,182,212,0.18)' },    // cyan
+    { color: '#f43f5e', bg: 'rgba(244,63,94,0.18)' },    // rosa
+    { color: '#eab308', bg: 'rgba(234,179,8,0.18)' },    // gelb
+    { color: '#14b8a6', bg: 'rgba(20,184,166,0.18)' },   // teal
+    { color: '#a855f7', bg: 'rgba(168,85,247,0.18)' },   // lila
+    { color: '#0ea5e9', bg: 'rgba(14,165,233,0.18)' },   // hellblau
+    { color: '#22c55e', bg: 'rgba(34,197,94,0.18)' },    // hellgrün
+  ];
+  const FALLBACK_COLOR = { color: '#64748b', bg: 'rgba(100,116,139,0.18)' };
 
   // DOM
   const fileDrop = document.getElementById('fileDrop');
@@ -1186,43 +1181,55 @@
     buildCategories();
   }
 
-  // Detect the best category key from metadata
+  // Detect category from metadata — tries common KML grouping fields dynamically
   function detectCategory(meta) {
-    // Check emergency first (defibrillator is most specific)
-    const em = meta['emergency'];
-    if (em && CATEGORY_MAP[em]) return em;
-
-    // Then amenity
-    const am = meta['amenity'];
-    if (am && CATEGORY_MAP[am]) return am;
-
-    // Then healthcare
-    const hc = meta['healthcare'];
-    if (hc && CATEGORY_MAP[hc]) return hc;
-
-    // Fallback: check all values
-    for (const val of [em, am, hc]) {
-      if (val && CATEGORY_MAP[val]) return val;
+    // Priority order of fields to use for grouping
+    const groupFields = ['emergency', 'amenity', 'healthcare', 'type', 'category', 'Kategorie', 'gruppe', 'group', 'class'];
+    for (const field of groupFields) {
+      const val = meta[field];
+      if (val && val !== 'yes' && val !== 'no' && val !== 'multipolygon' && val !== 'center') {
+        return val;
+      }
     }
-
-    return null; // no recognized category
+    return null;
   }
 
-  function getCategoryConfig(catKey) {
-    if (catKey && CATEGORY_MAP[catKey]) return CATEGORY_MAP[catKey];
-    return DEFAULT_CATEGORY;
+  // Get color config for a category key (assigns dynamically from palette)
+  function getCategoryColor(catKey) {
+    if (!catKey) return FALLBACK_COLOR;
+    if (colorAssignment[catKey] !== undefined) {
+      return COLOR_PALETTE[colorAssignment[catKey]] || FALLBACK_COLOR;
+    }
+    return FALLBACK_COLOR;
   }
 
-  // Build category counts and render filter chips
+  // Capitalize first letter for display label
+  function formatLabel(key) {
+    if (!key) return 'Sonstiges';
+    return key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ');
+  }
+
+  // Build category counts, assign colors, render filter chips
   function buildCategories() {
     categories = {};
+    colorAssignment = {};
+
+    // Count categories
     points.forEach(p => {
       const key = p.category || '_other';
       if (!categories[key]) {
-        const cfg = getCategoryConfig(p.category);
-        categories[key] = { ...cfg, count: 0, key: key };
+        categories[key] = { label: formatLabel(p.category), count: 0, key: key };
       }
       categories[key].count++;
+    });
+
+    // Assign colors: sort by count descending, biggest groups get the most distinct colors
+    const sorted = Object.keys(categories).sort((a, b) => categories[b].count - categories[a].count);
+    sorted.forEach((key, i) => {
+      colorAssignment[key] = i < COLOR_PALETTE.length ? i : -1;
+      const col = i < COLOR_PALETTE.length ? COLOR_PALETTE[i] : FALLBACK_COLOR;
+      categories[key].color = col.color;
+      categories[key].bg = col.bg;
     });
 
     // Only show filters if there are at least 2 different categories with meaningful counts
@@ -1231,7 +1238,7 @@
 
     if (hasCategories) {
       filterCard.classList.remove('hidden');
-      activeFilters.clear(); // all active by default
+      activeFilters.clear();
       renderFilterChips();
     } else {
       filterCard.classList.add('hidden');
@@ -1239,13 +1246,13 @@
   }
 
   function renderFilterChips() {
-    // Sort by count descending
     const sorted = Object.values(categories).sort((a, b) => b.count - a.count);
 
     filterWrap.innerHTML = sorted.map(cat => {
       const isActive = activeFilters.size === 0 || activeFilters.has(cat.key);
-      return '<button class="filter-chip ' + (isActive ? 'active' : '') + '" data-cat="' + cat.key + '">' +
-        '<span class="chip-icon">' + cat.icon + '</span>' +
+      return '<button class="filter-chip ' + (isActive ? 'active' : '') + '" data-cat="' + cat.key + '" style="' +
+        (isActive ? 'border-color:' + cat.color + '; background:' + cat.bg + '; color:' + cat.color : '') + '">' +
+        '<span class="chip-dot" style="background:' + cat.color + '"></span>' +
         '<span>' + escapeHtml(cat.label) + '</span>' +
         '<span class="chip-count">' + cat.count + '</span>' +
         '</button>';
@@ -1253,30 +1260,23 @@
 
     updateFilterSummary();
 
-    // Click handlers
     filterWrap.querySelectorAll('.filter-chip').forEach(chip => {
       chip.addEventListener('click', () => {
         const cat = chip.getAttribute('data-cat');
 
         if (activeFilters.size === 0) {
-          // Currently all active → select only this one
           activeFilters.add(cat);
         } else if (activeFilters.has(cat)) {
           activeFilters.delete(cat);
-          if (activeFilters.size === 0) {
-            // None selected → back to all
-          }
         } else {
           activeFilters.add(cat);
         }
 
-        // If all categories are selected, reset to empty (= show all)
         if (activeFilters.size === Object.keys(categories).length) {
           activeFilters.clear();
         }
 
         renderFilterChips();
-        // Force re-render of nearby list
         renderPausedUntil = 0;
         expandedPointIndex = null;
       });
@@ -1369,10 +1369,15 @@
     pendingAlarmPoints = pointsInRange;
 
     const closest = pointsInRange[0];
-    const cfg = getCategoryConfig(closest.category);
+    const catKey = closest.category || '_other';
+    const catInfo = categories[catKey];
     alarmName.textContent = closest.name;
     alarmDist.textContent = formatDist(closest.distance) + ' entfernt';
-    document.querySelector('.alarm-icon').textContent = cfg.icon;
+    if (catInfo && hasCategories) {
+      document.querySelector('.alarm-title').textContent = catInfo.label + ' in Reichweite';
+    } else {
+      document.querySelector('.alarm-title').textContent = 'Punkt in Reichweite';
+    }
 
     if (pointsInRange.length > 1) {
       alarmMultiple.textContent = '+ ' + (pointsInRange.length - 1) + ' weitere Punkte in Reichweite';
@@ -1516,8 +1521,10 @@
     // Trigger alarm for new points
     if (newInRange.length > 0 && !alarmActive) {
       newInRange.forEach(p => {
-        const cfg = getCategoryConfig(p.category);
-        addLog(cfg.icon + ' IN REICHWEITE: ' + p.name + ' (' + formatDist(p.distance) + ')');
+        const catKey = p.category || '_other';
+        const catInfo = categories[catKey];
+        const prefix = (catInfo && hasCategories) ? '[' + catInfo.label + '] ' : '';
+        addLog('🔔 IN REICHWEITE: ' + prefix + p.name + ' (' + formatDist(p.distance) + ')');
       });
       showAlarm(newInRange);
     }
@@ -1579,10 +1586,12 @@
         detailHtml += '</div>';
       }
 
-      // Category badge
-      const cfg = getCategoryConfig(p.category);
+      // Category color dot
+      const catKey = p.category || '_other';
+      const catInfo = categories[catKey];
+      const dotColor = catInfo ? catInfo.color : '#64748b';
       const catBadge = hasCategories
-        ? '<div class="cat-icon" style="background:' + cfg.bg + '" title="' + escapeHtml(cfg.label) + '">' + cfg.icon + '</div>'
+        ? '<div class="cat-dot" style="background:' + dotColor + '" title="' + escapeHtml(catInfo ? catInfo.label : '') + '"></div>'
         : '<div class="indicator"></div>';
 
       return '<div class="nearby-item ' + (inRange ? 'in-range' : 'out-range') + (isExpanded ? ' expanded' : '') + '" data-point-index="' + p.index + '">' +
