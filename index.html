@@ -738,6 +738,7 @@
   let alarmVibrationTimer = null;
   let pendingAlarmPoints = []; // points waiting to be dismissed
   let expandedPointIndex = null; // which point index is currently expanded
+  let renderPausedUntil = 0; // timestamp until which list re-rendering is paused
 
   // DOM
   const fileDrop = document.getElementById('fileDrop');
@@ -1319,8 +1320,23 @@
       setStatus('active', 'Nächster Punkt: ' + formatDist(nearest.distance));
     }
 
-    // Render nearby list (top 8)
-    renderNearby(withDist.slice(0, 8));
+    // Render nearby list (top 8) — skip if detail panel is open (pause period)
+    if (Date.now() < renderPausedUntil) {
+      // Still update distances in existing DOM without full re-render
+      nearbyList.querySelectorAll('.nearby-item[data-point-index]').forEach(item => {
+        const idx = parseInt(item.getAttribute('data-point-index'));
+        const match = withDist.find(p => p.index === idx);
+        if (match) {
+          const distEl = item.querySelector('.dist');
+          if (distEl) distEl.textContent = formatDist(match.distance);
+          // Update in-range styling
+          item.classList.toggle('in-range', match.distance <= radius);
+          item.classList.toggle('out-range', match.distance > radius);
+        }
+      });
+    } else {
+      renderNearby(withDist.slice(0, 8));
+    }
   }
 
   function renderNearby(items) {
@@ -1373,8 +1389,10 @@
           detail.classList.add('show');
           item.classList.add('expanded');
           expandedPointIndex = pointIdx;
+          renderPausedUntil = Date.now() + 10000; // pause re-render for 10s
         } else {
           expandedPointIndex = null;
+          renderPausedUntil = 0;
         }
       });
     });
@@ -1386,6 +1404,7 @@
       nearbyList.querySelectorAll('.nearby-detail.show').forEach(d => d.classList.remove('show'));
       nearbyList.querySelectorAll('.nearby-item.expanded').forEach(it => it.classList.remove('expanded'));
       expandedPointIndex = null;
+      renderPausedUntil = 0;
     }
   });
 
