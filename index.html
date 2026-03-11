@@ -266,6 +266,59 @@
   .nearby-item.out-range .indicator { background: var(--text-dim); }
   .nearby-item.in-range .dist { color: var(--alert); font-weight: 700; }
 
+  /* Category badge on nearby items */
+  .cat-icon {
+    width: 26px; height: 26px;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+    flex-shrink: 0;
+    line-height: 1;
+  }
+
+  /* Filter chips */
+  .filter-card { padding-bottom: 16px; }
+  .filter-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border-radius: 20px;
+    border: 1px solid rgba(255,255,255,0.1);
+    background: var(--surface2);
+    color: var(--text-dim);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: 'DM Sans', sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .filter-chip:hover { border-color: rgba(255,255,255,0.2); }
+  .filter-chip.active {
+    border-color: rgba(255,255,255,0.3);
+    background: rgba(255,255,255,0.08);
+    color: var(--text);
+  }
+  .filter-chip .chip-icon { font-size: 14px; }
+  .filter-chip .chip-count {
+    font-family: 'Space Mono', monospace;
+    font-size: 10px;
+    opacity: 0.6;
+  }
+  .filter-summary {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 10px;
+    font-family: 'Space Mono', monospace;
+  }
+
   /* Nearby item detail popup */
   .nearby-item { position: relative; cursor: pointer; }
   .nearby-item .expand-icon {
@@ -674,6 +727,13 @@
     <button class="btn btn-stop hidden" id="stopBtn">Tracking stoppen</button>
   </div>
 
+  <!-- Category Filter (only shown if categories detected) -->
+  <div class="card filter-card hidden" id="filterCard">
+    <div class="card-label">Kategorien filtern</div>
+    <div class="filter-wrap" id="filterWrap"></div>
+    <div class="filter-summary" id="filterSummary"></div>
+  </div>
+
   <!-- Tracking View -->
   <div class="card hidden" id="statusCard">
     <div class="card-label">Status</div>
@@ -739,6 +799,28 @@
   let pendingAlarmPoints = []; // points waiting to be dismissed
   let expandedPointIndex = null; // which point index is currently expanded
   let renderPausedUntil = 0; // timestamp until which list re-rendering is paused
+  let categories = {}; // detected categories: { key: { label, icon, color, count } }
+  let activeFilters = new Set(); // which categories are active (empty = all)
+  let hasCategories = false;
+
+  // Category definitions: maps amenity/emergency/healthcare values to display config
+  const CATEGORY_MAP = {
+    defibrillator:  { label: 'Defibrillator',  icon: '❤️‍🩹', color: '#ef4444', bg: 'rgba(239,68,68,0.15)' },
+    pharmacy:       { label: 'Apotheke',        icon: '💊',   color: '#10b981', bg: 'rgba(16,185,129,0.15)' },
+    doctors:        { label: 'Arzt',            icon: '🩺',   color: '#3b82f6', bg: 'rgba(59,130,246,0.15)' },
+    doctor:         { label: 'Arzt',            icon: '🩺',   color: '#3b82f6', bg: 'rgba(59,130,246,0.15)' },
+    dentist:        { label: 'Zahnarzt',        icon: '🦷',   color: '#8b5cf6', bg: 'rgba(139,92,246,0.15)' },
+    hospital:       { label: 'Spital',          icon: '🏥',   color: '#f59e0b', bg: 'rgba(245,158,11,0.15)' },
+    clinic:         { label: 'Klinik',          icon: '🏨',   color: '#06b6d4', bg: 'rgba(6,182,212,0.15)' },
+    ambulance_station: { label: 'Ambulanz',     icon: '🚑',   color: '#f43f5e', bg: 'rgba(244,63,94,0.15)' },
+    telephone:      { label: 'Notfall-Telefon', icon: '📞',   color: '#eab308', bg: 'rgba(234,179,8,0.15)' },
+    centre:         { label: 'Gesundheitszentrum', icon: '🏥', color: '#14b8a6', bg: 'rgba(20,184,166,0.15)' },
+    rehabilitation: { label: 'Reha',            icon: '♿',   color: '#64748b', bg: 'rgba(100,116,139,0.15)' },
+    alternative:    { label: 'Alternativmedizin', icon: '🌿', color: '#22c55e', bg: 'rgba(34,197,94,0.15)' },
+    physiotherapist: { label: 'Physiotherapie', icon: '💆',   color: '#0ea5e9', bg: 'rgba(14,165,233,0.15)' },
+    vaccination_centre: { label: 'Impfzentrum', icon: '💉',  color: '#a855f7', bg: 'rgba(168,85,247,0.15)' },
+  };
+  const DEFAULT_CATEGORY = { label: 'Sonstiges', icon: '📍', color: '#64748b', bg: 'rgba(100,116,139,0.15)' };
 
   // DOM
   const fileDrop = document.getElementById('fileDrop');
@@ -780,6 +862,11 @@
   const alarmDist = document.getElementById('alarmDist');
   const alarmDismiss = document.getElementById('alarmDismiss');
   const alarmMultiple = document.getElementById('alarmMultiple');
+
+  // Filter DOM
+  const filterCard = document.getElementById('filterCard');
+  const filterWrap = document.getElementById('filterWrap');
+  const filterSummary = document.getElementById('filterSummary');
 
   // ─── Platform detection ───
   function detectPlatform() {
@@ -1085,9 +1172,132 @@
           // Coordinates for reference
           point.meta['Koordinaten'] = parseFloat(parts[1]).toFixed(6) + ', ' + parseFloat(parts[0]).toFixed(6);
 
+          // ─── Category detection ───
+          // Priority: emergency > amenity > healthcare
+          const catKey = detectCategory(point.meta);
+          point.category = catKey;
+
           points.push(point);
         }
       }
+    });
+
+    // Build category index
+    buildCategories();
+  }
+
+  // Detect the best category key from metadata
+  function detectCategory(meta) {
+    // Check emergency first (defibrillator is most specific)
+    const em = meta['emergency'];
+    if (em && CATEGORY_MAP[em]) return em;
+
+    // Then amenity
+    const am = meta['amenity'];
+    if (am && CATEGORY_MAP[am]) return am;
+
+    // Then healthcare
+    const hc = meta['healthcare'];
+    if (hc && CATEGORY_MAP[hc]) return hc;
+
+    // Fallback: check all values
+    for (const val of [em, am, hc]) {
+      if (val && CATEGORY_MAP[val]) return val;
+    }
+
+    return null; // no recognized category
+  }
+
+  function getCategoryConfig(catKey) {
+    if (catKey && CATEGORY_MAP[catKey]) return CATEGORY_MAP[catKey];
+    return DEFAULT_CATEGORY;
+  }
+
+  // Build category counts and render filter chips
+  function buildCategories() {
+    categories = {};
+    points.forEach(p => {
+      const key = p.category || '_other';
+      if (!categories[key]) {
+        const cfg = getCategoryConfig(p.category);
+        categories[key] = { ...cfg, count: 0, key: key };
+      }
+      categories[key].count++;
+    });
+
+    // Only show filters if there are at least 2 different categories with meaningful counts
+    const meaningfulCats = Object.values(categories).filter(c => c.count >= 2);
+    hasCategories = meaningfulCats.length >= 2;
+
+    if (hasCategories) {
+      filterCard.classList.remove('hidden');
+      activeFilters.clear(); // all active by default
+      renderFilterChips();
+    } else {
+      filterCard.classList.add('hidden');
+    }
+  }
+
+  function renderFilterChips() {
+    // Sort by count descending
+    const sorted = Object.values(categories).sort((a, b) => b.count - a.count);
+
+    filterWrap.innerHTML = sorted.map(cat => {
+      const isActive = activeFilters.size === 0 || activeFilters.has(cat.key);
+      return '<button class="filter-chip ' + (isActive ? 'active' : '') + '" data-cat="' + cat.key + '">' +
+        '<span class="chip-icon">' + cat.icon + '</span>' +
+        '<span>' + escapeHtml(cat.label) + '</span>' +
+        '<span class="chip-count">' + cat.count + '</span>' +
+        '</button>';
+    }).join('');
+
+    updateFilterSummary();
+
+    // Click handlers
+    filterWrap.querySelectorAll('.filter-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const cat = chip.getAttribute('data-cat');
+
+        if (activeFilters.size === 0) {
+          // Currently all active → select only this one
+          activeFilters.add(cat);
+        } else if (activeFilters.has(cat)) {
+          activeFilters.delete(cat);
+          if (activeFilters.size === 0) {
+            // None selected → back to all
+          }
+        } else {
+          activeFilters.add(cat);
+        }
+
+        // If all categories are selected, reset to empty (= show all)
+        if (activeFilters.size === Object.keys(categories).length) {
+          activeFilters.clear();
+        }
+
+        renderFilterChips();
+        // Force re-render of nearby list
+        renderPausedUntil = 0;
+        expandedPointIndex = null;
+      });
+    });
+  }
+
+  function updateFilterSummary() {
+    const total = points.length;
+    const filtered = getFilteredPoints().length;
+    if (activeFilters.size === 0) {
+      filterSummary.textContent = 'Alle ' + total + ' Punkte aktiv';
+    } else {
+      filterSummary.textContent = filtered + ' von ' + total + ' Punkten aktiv';
+    }
+  }
+
+  function getFilteredPoints() {
+    if (!hasCategories || activeFilters.size === 0) return points;
+    return points.filter(p => {
+      const key = p.category || '_other';
+      return activeFilters.has(key);
     });
   }
 
@@ -1159,8 +1369,10 @@
     pendingAlarmPoints = pointsInRange;
 
     const closest = pointsInRange[0];
+    const cfg = getCategoryConfig(closest.category);
     alarmName.textContent = closest.name;
     alarmDist.textContent = formatDist(closest.distance) + ' entfernt';
+    document.querySelector('.alarm-icon').textContent = cfg.icon;
 
     if (pointsInRange.length > 1) {
       alarmMultiple.textContent = '+ ' + (pointsInRange.length - 1) + ' weitere Punkte in Reichweite';
@@ -1282,30 +1494,36 @@
   function checkProximity() {
     if (!currentPos || points.length === 0) return;
 
-    // Calculate distances
-    const withDist = points.map((p, i) => ({
+    // Calculate distances for ALL points (alerts should work regardless of filter)
+    const allWithDist = points.map((p, i) => ({
       ...p,
       index: i,
       distance: haversine(currentPos.lat, currentPos.lng, p.lat, p.lng)
     }));
 
-    // Sort by distance
-    withDist.sort((a, b) => a.distance - b.distance);
+    // Filtered set for display
+    const filteredWithDist = allWithDist.filter(p => {
+      if (!hasCategories || activeFilters.size === 0) return true;
+      const key = p.category || '_other';
+      return activeFilters.has(key);
+    });
+    filteredWithDist.sort((a, b) => a.distance - b.distance);
 
-    // Find new points in range that haven't been alerted yet
-    const newInRange = withDist.filter(p => p.distance <= radius && !alertedPoints.has(p.index));
-    const allInRange = withDist.filter(p => p.distance <= radius);
+    // Alerts: only for filtered points
+    const newInRange = filteredWithDist.filter(p => p.distance <= radius && !alertedPoints.has(p.index));
+    const allInRange = filteredWithDist.filter(p => p.distance <= radius);
 
     // Trigger alarm for new points
     if (newInRange.length > 0 && !alarmActive) {
       newInRange.forEach(p => {
-        addLog('🔔 IN REICHWEITE: ' + p.name + ' (' + formatDist(p.distance) + ')');
+        const cfg = getCategoryConfig(p.category);
+        addLog(cfg.icon + ' IN REICHWEITE: ' + p.name + ' (' + formatDist(p.distance) + ')');
       });
       showAlarm(newInRange);
     }
 
     // Reset alert when leaving radius (with 10% hysteresis)
-    withDist.forEach(p => {
+    allWithDist.forEach(p => {
       if (alertedPoints.has(p.index) && p.distance > radius * 1.1) {
         alertedPoints.delete(p.index);
         addLog('↩️ Verlassen: ' + p.name);
@@ -1315,27 +1533,28 @@
     // Update status
     if (allInRange.length > 0) {
       setStatus('alert', allInRange.length + ' Punkt' + (allInRange.length > 1 ? 'e' : '') + ' in Reichweite!');
-    } else {
-      const nearest = withDist[0];
+    } else if (filteredWithDist.length > 0) {
+      const nearest = filteredWithDist[0];
       setStatus('active', 'Nächster Punkt: ' + formatDist(nearest.distance));
+    } else {
+      setStatus('active', 'Keine Punkte im Filter');
     }
 
-    // Render nearby list (top 8) — skip if detail panel is open (pause period)
+    // Render nearby list (top 10) — skip if detail panel is open (pause period)
     if (Date.now() < renderPausedUntil) {
       // Still update distances in existing DOM without full re-render
       nearbyList.querySelectorAll('.nearby-item[data-point-index]').forEach(item => {
         const idx = parseInt(item.getAttribute('data-point-index'));
-        const match = withDist.find(p => p.index === idx);
+        const match = filteredWithDist.find(p => p.index === idx);
         if (match) {
           const distEl = item.querySelector('.dist');
           if (distEl) distEl.textContent = formatDist(match.distance);
-          // Update in-range styling
           item.classList.toggle('in-range', match.distance <= radius);
           item.classList.toggle('out-range', match.distance > radius);
         }
       });
     } else {
-      renderNearby(withDist.slice(0, 8));
+      renderNearby(filteredWithDist.slice(0, 10));
     }
   }
 
@@ -1360,8 +1579,14 @@
         detailHtml += '</div>';
       }
 
+      // Category badge
+      const cfg = getCategoryConfig(p.category);
+      const catBadge = hasCategories
+        ? '<div class="cat-icon" style="background:' + cfg.bg + '" title="' + escapeHtml(cfg.label) + '">' + cfg.icon + '</div>'
+        : '<div class="indicator"></div>';
+
       return '<div class="nearby-item ' + (inRange ? 'in-range' : 'out-range') + (isExpanded ? ' expanded' : '') + '" data-point-index="' + p.index + '">' +
-        '<div class="indicator"></div>' +
+        catBadge +
         '<div class="name">' + escapeHtml(p.name) + '</div>' +
         '<div class="dist">' + formatDist(p.distance) + '</div>' +
         (hasData ? '<div class="expand-icon">▼</div>' : '') +
