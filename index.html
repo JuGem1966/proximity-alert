@@ -422,6 +422,84 @@
   .platform-help .step-text { flex: 1; }
   .platform-help em { color: var(--text); font-style: normal; font-weight: 500; }
 
+  /* Fullscreen Alarm Overlay */
+  .alarm-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    text-align: center;
+    animation: alarm-flash 1s ease-in-out infinite;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  @keyframes alarm-flash {
+    0%, 100% { background: rgba(220, 38, 38, 0.92); }
+    50% { background: rgba(153, 27, 27, 0.96); }
+  }
+  .alarm-overlay.hidden { display: none; }
+  .alarm-overlay .alarm-icon {
+    font-size: 72px;
+    margin-bottom: 16px;
+    animation: alarm-bounce 0.6s ease-in-out infinite alternate;
+  }
+  @keyframes alarm-bounce {
+    from { transform: scale(1); }
+    to { transform: scale(1.15); }
+  }
+  .alarm-overlay .alarm-title {
+    font-family: 'Space Mono', monospace;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 3px;
+    color: rgba(255,255,255,0.7);
+    margin-bottom: 8px;
+  }
+  .alarm-overlay .alarm-name {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 28px;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 8px;
+    max-width: 90%;
+    line-height: 1.3;
+  }
+  .alarm-overlay .alarm-dist {
+    font-family: 'Space Mono', monospace;
+    font-size: 18px;
+    color: rgba(255,255,255,0.8);
+    margin-bottom: 32px;
+  }
+  .alarm-overlay .alarm-dismiss {
+    padding: 18px 48px;
+    background: rgba(255,255,255,0.15);
+    border: 2px solid rgba(255,255,255,0.5);
+    border-radius: 14px;
+    color: #fff;
+    font-family: 'Space Mono', monospace;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+  }
+  .alarm-overlay .alarm-dismiss:hover,
+  .alarm-overlay .alarm-dismiss:active {
+    background: rgba(255,255,255,0.3);
+    border-color: #fff;
+    transform: scale(1.03);
+  }
+  .alarm-overlay .alarm-multiple {
+    margin-top: 16px;
+    font-size: 13px;
+    color: rgba(255,255,255,0.6);
+  }
+
   /* Scrollbar */
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -580,6 +658,16 @@
   </div>
 </div>
 
+<!-- Fullscreen Alarm Overlay -->
+<div class="alarm-overlay hidden" id="alarmOverlay">
+  <div class="alarm-icon">🔔</div>
+  <div class="alarm-title">Punkt in Reichweite</div>
+  <div class="alarm-name" id="alarmName">—</div>
+  <div class="alarm-dist" id="alarmDist">—</div>
+  <button class="alarm-dismiss" id="alarmDismiss">Verstanden</button>
+  <div class="alarm-multiple hidden" id="alarmMultiple"></div>
+</div>
+
 <script>
 (function() {
   // State
@@ -592,6 +680,9 @@
   let audioCtx = null;
   let isTracking = false;
   let gpsPermission = 'unknown'; // unknown, granted, denied, prompt, unavailable
+  let alarmActive = false;
+  let alarmVibrationTimer = null;
+  let pendingAlarmPoints = []; // points waiting to be dismissed
 
   // DOM
   const fileDrop = document.getElementById('fileDrop');
@@ -626,6 +717,13 @@
   const helpToggle = document.getElementById('helpToggle');
   const helpPanel = document.getElementById('helpPanel');
   const platformTabs = document.getElementById('platformTabs');
+
+  // Alarm overlay DOM
+  const alarmOverlay = document.getElementById('alarmOverlay');
+  const alarmName = document.getElementById('alarmName');
+  const alarmDist = document.getElementById('alarmDist');
+  const alarmDismiss = document.getElementById('alarmDismiss');
+  const alarmMultiple = document.getElementById('alarmMultiple');
 
   // ─── Platform detection ───
   function detectPlatform() {
@@ -920,10 +1018,68 @@
   }
 
   function vibrate() {
-    if (navigator.vibrate) {
-      navigator.vibrate([200, 100, 200, 100, 300]);
-    }
+    if (!navigator.vibrate) return;
+    // Strong 3x repeated pattern: buzz-pause-buzz-pause-BUZZ (×3)
+    const singleBurst = [300, 100, 300, 100, 500, 200];
+    // Repeat 3 times
+    const pattern = [...singleBurst, ...singleBurst, ...singleBurst];
+    navigator.vibrate(pattern);
   }
+
+  function startRepeatingVibration() {
+    vibrate();
+    // Repeat every 4.5 seconds until dismissed
+    alarmVibrationTimer = setInterval(() => {
+      vibrate();
+    }, 4500);
+  }
+
+  function stopRepeatingVibration() {
+    if (alarmVibrationTimer) {
+      clearInterval(alarmVibrationTimer);
+      alarmVibrationTimer = null;
+    }
+    if (navigator.vibrate) navigator.vibrate(0); // cancel immediately
+  }
+
+  // ─── Fullscreen Alarm ───
+  function showAlarm(pointsInRange) {
+    if (alarmActive) return; // already showing
+    alarmActive = true;
+    pendingAlarmPoints = pointsInRange;
+
+    const closest = pointsInRange[0];
+    alarmName.textContent = closest.name;
+    alarmDist.textContent = formatDist(closest.distance) + ' entfernt';
+
+    if (pointsInRange.length > 1) {
+      alarmMultiple.textContent = '+ ' + (pointsInRange.length - 1) + ' weitere Punkte in Reichweite';
+      alarmMultiple.classList.remove('hidden');
+    } else {
+      alarmMultiple.classList.add('hidden');
+    }
+
+    alarmOverlay.classList.remove('hidden');
+
+    // Start vibration + sound
+    startRepeatingVibration();
+    playAlertSound();
+  }
+
+  function dismissAlarm() {
+    alarmActive = false;
+    alarmOverlay.classList.add('hidden');
+    stopRepeatingVibration();
+
+    // Mark all currently displayed alarm points as alerted
+    pendingAlarmPoints.forEach(p => {
+      alertedPoints.add(p.index);
+      addLog('✓ Bestätigt: ' + p.name);
+    });
+    pendingAlarmPoints = [];
+  }
+
+  alarmDismiss.addEventListener('click', dismissAlarm);
 
   // Start tracking
   startBtn.addEventListener('click', async () => {
@@ -988,6 +1144,7 @@
     isTracking = false;
     if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
     if (intervalId !== null) { clearInterval(intervalId); intervalId = null; }
+    if (alarmActive) dismissAlarm();
 
     stopBtn.classList.add('hidden');
     startBtn.classList.remove('hidden');
@@ -1025,30 +1182,29 @@
     // Sort by distance
     withDist.sort((a, b) => a.distance - b.distance);
 
-    // Check alerts
-    let anyInRange = false;
+    // Find new points in range that haven't been alerted yet
+    const newInRange = withDist.filter(p => p.distance <= radius && !alertedPoints.has(p.index));
+    const allInRange = withDist.filter(p => p.distance <= radius);
+
+    // Trigger alarm for new points
+    if (newInRange.length > 0 && !alarmActive) {
+      newInRange.forEach(p => {
+        addLog('🔔 IN REICHWEITE: ' + p.name + ' (' + formatDist(p.distance) + ')');
+      });
+      showAlarm(newInRange);
+    }
+
+    // Reset alert when leaving radius (with 10% hysteresis)
     withDist.forEach(p => {
-      if (p.distance <= radius) {
-        anyInRange = true;
-        if (!alertedPoints.has(p.index)) {
-          alertedPoints.add(p.index);
-          vibrate();
-          playAlertSound();
-          addLog('🔔 IN REICHWEITE: ' + p.name + ' (' + formatDist(p.distance) + ')');
-        }
-      } else {
-        // Reset alert when leaving radius (with 10% hysteresis)
-        if (alertedPoints.has(p.index) && p.distance > radius * 1.1) {
-          alertedPoints.delete(p.index);
-          addLog('↩️ Verlassen: ' + p.name);
-        }
+      if (alertedPoints.has(p.index) && p.distance > radius * 1.1) {
+        alertedPoints.delete(p.index);
+        addLog('↩️ Verlassen: ' + p.name);
       }
     });
 
     // Update status
-    if (anyInRange) {
-      const count = withDist.filter(p => p.distance <= radius).length;
-      setStatus('alert', count + ' Punkt' + (count > 1 ? 'e' : '') + ' in Reichweite!');
+    if (allInRange.length > 0) {
+      setStatus('alert', allInRange.length + ' Punkt' + (allInRange.length > 1 ? 'e' : '') + ' in Reichweite!');
     } else {
       const nearest = withDist[0];
       setStatus('active', 'Nächster Punkt: ' + formatDist(nearest.distance));
