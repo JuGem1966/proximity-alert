@@ -338,6 +338,30 @@
     from { opacity: 0; transform: translateY(-6px); }
     to { opacity: 1; transform: translateY(0); }
   }
+  .nearby-detail .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
+    background: rgba(34,211,238,0.08);
+    border: 1px solid rgba(34,211,238,0.2);
+    border-radius: 8px;
+    color: var(--accent);
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 500;
+    transition: all 0.2s;
+  }
+  .nearby-detail .nav-link:hover {
+    background: rgba(34,211,238,0.15);
+    border-color: var(--accent);
+  }
+  .nearby-detail .nav-link .nav-arrow {
+    margin-left: auto;
+    font-size: 11px;
+    opacity: 0.6;
+  }
   .nearby-detail .detail-row {
     display: flex;
     gap: 8px;
@@ -1573,8 +1597,21 @@
       const isExpanded = expandedPointIndex === p.index;
 
       let detailHtml = '';
-      if (hasData) {
-        detailHtml = '<div class="nearby-detail' + (isExpanded ? ' show' : '') + '" data-detail-for="' + p.index + '">';
+      // Always build detail (we always have coordinates for the nav link)
+      detailHtml = '<div class="nearby-detail' + (isExpanded ? ' show' : '') + '" data-detail-for="' + p.index + '">';
+
+      // Google Maps navigation link (uses current position as origin if available)
+      const destCoord = p.lat + ',' + p.lng;
+      const mapsUrl = currentPos
+        ? 'https://www.google.com/maps/dir/' + currentPos.lat + ',' + currentPos.lng + '/' + destCoord
+        : 'https://www.google.com/maps/dir//' + destCoord;
+      detailHtml += '<a class="nav-link" href="' + mapsUrl + '" target="_blank" rel="noopener noreferrer">' +
+        '🧭 Route in Google Maps' +
+        '<span class="nav-arrow">↗</span>' +
+        '</a>';
+
+      // Metadata rows
+      if (metaKeys.length > 0) {
         metaKeys.forEach(key => {
           const raw = p.meta[key];
           const rendered = renderValue(raw);
@@ -1583,8 +1620,8 @@
             '<span class="detail-value">' + rendered + '</span>' +
             '</div>';
         });
-        detailHtml += '</div>';
       }
+      detailHtml += '</div>';
 
       // Category color dot
       const catKey = p.category || '_other';
@@ -1598,7 +1635,7 @@
         catBadge +
         '<div class="name">' + escapeHtml(p.name) + '</div>' +
         '<div class="dist">' + formatDist(p.distance) + '</div>' +
-        (hasData ? '<div class="expand-icon">▼</div>' : '') +
+        '<div class="expand-icon">▼</div>' +
         '</div>' + detailHtml;
     }).join('');
 
